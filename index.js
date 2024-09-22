@@ -1,6 +1,10 @@
 import puppeteer from "puppeteer";
 import dotenv from "dotenv";
-import { getMetaDataFromPage, sendTelegramNotify } from "./fetch.js";
+import {
+    getMetaDataFromPage,
+    sendTelegramNotify,
+    getItemPriceOnWaxpeer,
+} from "./fetch.js";
 
 dotenv.config();
 
@@ -138,6 +142,7 @@ const checkIfTheItemFits = async (itemData) => {
         ) *
             100) /
         10000;
+    let waxpeerPriceWithFees;
     const suggestPrice =
         (Math.round(
             (itemData.suggested_price / exchangeRate.CSGOEMPIRE_COIN) *
@@ -152,12 +157,26 @@ const checkIfTheItemFits = async (itemData) => {
     const aboveRecomendedPrice = itemData.above_recommended_price;
     const type = itemData?.item_search?.type || null;
 
-    if (marketValue > 500 && aboveRecomendedPrice < 0) {
-        console.log(
-            `${marketName}\n${marketValue}\n${suggestPrice}\n${publishedAtMessage}\n${aboveRecomendedPrice}\n${type}\n`
-        );
+    if (
+        5499 > marketValue > 500 &&
+        aboveRecomendedPrice < 0 &&
+        type !== "Knife"
+    ) {
+        try {
+            waxpeerPriceWithFees =
+                Math.round(
+                    ((await getItemPriceOnWaxpeer(marketName)) / 1000) *
+                        0.96 *
+                        0.99 *
+                        100
+                ) / 100;
+        } catch (error) {
+            console.log("Seemed we got rate limit on waxpeer :(", error);
+            waxpeerPriceWithFees = "Not found :(";
+        }
+
         await sendTelegramNotify(
-            `<strong>EMPIRE BOT PARCED ITEM</strong>\n\nItem Name: ${marketName}\nList price: ${marketValue}$\nSuggest price: ${suggestPrice}$\nItem was listed at: ${publishedAtMessage}\nDifferense from the recommended price: ${aboveRecomendedPrice}%`
+            `<strong>EMPIRE BOT PARCED ITEM</strong>\n\nItem Name: ${marketName}\nList price: ${marketValue}$\nWaxpeer price with fees: ${waxpeerPriceWithFees}$\nSuggest price: ${suggestPrice}$\nItem was listed at: ${publishedAtMessage}\nDifferense from the recommended price: ${aboveRecomendedPrice}%`
         );
     }
 };

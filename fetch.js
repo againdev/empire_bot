@@ -53,3 +53,22 @@ export const sendTelegramNotify = async (message) => {
         throw error;
     }
 };
+
+export const getItemPriceOnWaxpeer = async (itemName) => {
+    const waxpeerApi = process.env.WAXPEER_API;
+
+    try {
+        const response = await axios.get(
+            `https://api.waxpeer.com/v1/search-items-by-name?api=${waxpeerApi}&names=${encodeURIComponent(
+                itemName
+            )}&game=csgo&minified=0`,
+            {
+                accept: "application/json",
+            }
+        );
+        return response.data?.items[0]?.price || null;
+    } catch (error) {
+        console.log("Failed to get waxpeer item price: ", error);
+        throw error;
+    }
+};
