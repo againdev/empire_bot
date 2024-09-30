@@ -1,155 +1,97 @@
-import puppeteer from "puppeteer";
-import dotenv from "dotenv";
 import {
-    getMetaDataFromPage,
+    getEmpireMetadata,
     sendTelegramNotify,
     getItemPriceOnWaxpeer,
 } from "./fetch.js";
+import io from "socket.io-client";
+import pkg from "https-proxy-agent";
+import dotenv from "dotenv";
 
 dotenv.config();
 
-const proxyAdress = process.env.PROXY_ADRESS;
-const proxyPort = process.env.PROXY_PORT;
+const initSocket = async () => {
+    let metaData = await getEmpireMetadata();
 
-let UUID;
-let exchangeRate;
-let socketToken;
+    const domain = "csgoempiretr.com";
+    const socketEndpoint = `wss://trade.${domain}/trade`;
 
-(async () => {
-    let args = [];
+    const PROXY_ADDRESS = process.env.PROXY_ADDRESS || "";
+    const PROXY_PORT = process.env.PROXY_PORT || "";
 
-    if (proxyAdress && proxyPort) {
-        args.push(`--proxy-server=${proxyAdress}:${proxyPort}`);
-        console.log(`Using proxy: ${proxyAdress}:${proxyPort}`);
-    } else {
-        console.log("No proxy set, using default connection.");
+    let agent = null;
+    if (PROXY_ADDRESS && PROXY_PORT) {
+        const { HttpProxyAgent } = pkg;
+        agent = new HttpProxyAgent({
+            host: PROXY_ADDRESS,
+            port: parseInt(PROXY_PORT),
+            secure: true,
+        });
     }
 
-    const browser = await puppeteer.launch({
-        headless: false,
-        defaultViewport: null,
-        args: args,
-    });
-    const page = await browser.newPage();
+    const socketOptions = {
+        transports: ["websocket"],
+        path: "/s/",
+        secure: true,
+        rejectUnauthorized: false,
+        reconnect: true,
+        extraHeaders: { "User-agent": `${metaData.user.id} API Bot` },
+        agent: agent || undefined,
+    };
 
-    await page.setRequestInterception(true);
+    const socket = io(socketEndpoint, socketOptions);
 
-    const uuidPromise = new Promise((resolve) => {
-        page.on("request", async (request) => {
-            const url = request.url();
+    socket.on("connect", () => {
+        console.log("Connected to websocket");
 
-            if (url.includes("/api/v2/metadata?uuid=")) {
-                console.log("Intercepted request to:", url);
-                const parsedUrl = new URL(url);
-                UUID = parsedUrl.searchParams.get("uuid");
-                console.log(UUID);
+        socket.on("init", async (data) => {
+            if (data && data.authenticated) {
+                console.log(`Successfully authenticated as ${data.name}`);
+
+                socket.emit("filters", {
+                    price_max: 9999999,
+                });
+            } else {
+                console.log(`Not Auntificated, trying to get meta_data`);
+                metaData = await getEmpireMetadata();
+
+                socket.emit("identify", {
+                    uid: metaData.user.id,
+                    model: metaData.user,
+                    authorizationToken: metaData.socket_token,
+                    signature: metaData.socket_signature,
+                });
             }
+        });
 
-            if (url.includes("/api/v2/metadata/exchange-rates")) {
-                console.log("Got exchange-rate request");
+        socket.on("new_item", (data) => {
+            data.map((item) => {
+                checkIfTheItemFits(item);
+            });
+        });
 
-                try {
-                    const response = await fetch(url, {
-                        method: "GET",
-                        headers: request.headers(),
-                        credentials: "include",
-                    });
-
-                    const jsonResponse = await response.json();
-                    exchangeRate = jsonResponse.rates;
-                    console.log("Exchange Rates:", exchangeRate);
-                } catch (error) {
-                    console.error("Error fetching exhange rates: ", error);
-                }
-            }
-
-            if (UUID && exchangeRate) {
-                resolve(UUID);
-            }
-
-            request.continue();
+        socket.on("disconnect", (reason) => {
+            console.log(`Socket disconnected: ${reason}`);
+            socket.removeAllListeners("new_item");
+            socket.removeAllListeners("init");
         });
     });
 
-    await page.goto("https://csgoempire.com/withdraw/steam/market");
+    socket.on("close", (reason) => console.log(`Socket closed: ${reason}`));
+    socket.on("error", (data) => console.log(`WS Error: ${data}`));
+    socket.on("connect_error", (data) => console.log(`Connect Error: ${data}`));
+};
 
-    try {
-        const UUID = await uuidPromise;
-
-        const metaData = await getMetaDataFromPage(page, UUID);
-        socketToken = metaData.socket_token;
-        console.log("Socket Token:", socketToken);
-
-        if (socketToken) {
-            try {
-                const client = await page._client();
-
-                client.on(
-                    "Network.webSocketFrameReceived",
-                    ({ requestId, timestamp, response }) => {
-                        const message = response.payloadData;
-                        if (message.includes("new_item")) {
-                            try {
-                                const parsedMessage = JSON.parse(
-                                    message.replace(/^42\/trade,/, "")
-                                );
-                                if (parsedMessage[0] === "new_item") {
-                                    console.log(
-                                        'Parsed "new_item" event: ',
-                                        parsedMessage[1][0]
-                                    );
-                                    checkIfTheItemFits(parsedMessage[1][0]);
-                                }
-                            } catch (error) {
-                                console.error(
-                                    "Error parsing WebSocket message: ",
-                                    error
-                                );
-                            }
-                        }
-                    }
-                );
-
-                client.on(
-                    "Network.webSocketClosed",
-                    ({ requestId, timestamp }) => {
-                        console.log("WebSocket Closed:", requestId);
-                    }
-                );
-
-                client.on("Network.webSocketCreated", ({ requestId, url }) => {
-                    console.log("WebSocket Created:", url);
-                });
-
-                await client.send("Network.enable");
-            } catch (error) {
-                console.error("Failed listening WebSocket: ", error);
-            }
-        } else {
-            console.log("Token wasn't retrieved");
-        }
-    } catch (error) {
-        console.error("Error fetching metadata: ", error);
-    }
-})();
+initSocket();
 
 const checkIfTheItemFits = async (itemData) => {
+    const COIN_TO_USD_RATE = 0.6142808;
+
     const marketName = itemData.market_name;
     const marketValue =
-        (Math.round(
-            (itemData.market_value / exchangeRate.CSGOEMPIRE_COIN) *
-                exchangeRate.USD
-        ) *
-            100) /
-        10000;
+        (Math.round(itemData.market_value * COIN_TO_USD_RATE) * 100) / 10000;
     let waxpeerPriceWithFees;
     const suggestPrice =
-        (Math.round(
-            (itemData.suggested_price / exchangeRate.CSGOEMPIRE_COIN) *
-                exchangeRate.USD
-        ) *
-            100) /
-        10000;
+        (Math.round(itemData.suggested_price * COIN_TO_USD_RATE) * 100) / 10000;
 
     let publishedAt = new Date(itemData.published_at);
     const publishedAtMessage = `${publishedAt.getHours()}h:${publishedAt.getMinutes()}m:${publishedAt.getSeconds()}s`;
@@ -157,11 +99,9 @@ const checkIfTheItemFits = async (itemData) => {
     const aboveRecomendedPrice = itemData.above_recommended_price;
     const type = itemData?.item_search?.type || null;
 
-    if (
-        5499 > marketValue > 500 &&
-        aboveRecomendedPrice < 0 &&
-        type !== "Knife"
-    ) {
+    marketValue > 500 && console.log(marketValue, aboveRecomendedPrice);
+
+    if (marketValue > 500 && aboveRecomendedPrice < 0 && type != "Knife") {
         try {
             waxpeerPriceWithFees =
                 Math.round(
@@ -175,8 +115,14 @@ const checkIfTheItemFits = async (itemData) => {
             waxpeerPriceWithFees = "Not found :(";
         }
 
-        await sendTelegramNotify(
+        console.log(
             `<strong>EMPIRE BOT PARCED ITEM</strong>\n\nItem Name: ${marketName}\nList price: ${marketValue}$\nWaxpeer price with fees: ${waxpeerPriceWithFees}$\nSuggest price: ${suggestPrice}$\nItem was listed at: ${publishedAtMessage}\nDifferense from the recommended price: ${aboveRecomendedPrice}%`
+        );
+
+        await sendTelegramNotify(
+            `<strong>EMPIRE BOT PARCED ITEM</strong>\n\nItem Name: ${marketName}\nList price: ${marketValue}$\n<a href="https://waxpeer.com/${encodeURIComponent(
+                marketName
+            )}">Waxpeer price with fees: ${waxpeerPriceWithFees}$</a>\nSuggest price: ${suggestPrice}$\nItem was listed at: ${publishedAtMessage} (MSK)\nDifferense from the recommended price: ${aboveRecomendedPrice}%`
         );
     }
 };

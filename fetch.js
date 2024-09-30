@@ -3,49 +3,54 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-export const getMetaDataFromPage = async (page, uuid) => {
-    return await page.evaluate(async (uuid) => {
-        const response = await fetch(
-            `https://csgoempire.com/api/v2/metadata?uuid=${uuid}`,
+const PROXY_ADDRESS = process.env.PROXY_ADDRESS || "";
+const PROXY_PORT = process.env.PROXY_PORT || "";
+
+const proxyConfig =
+    PROXY_ADDRESS && PROXY_PORT
+        ? {
+              proxy: {
+                  host: PROXY_ADDRESS,
+                  port: PROXY_PORT,
+              },
+          }
+        : {};
+
+export const getEmpireMetadata = async () => {
+    const EMPIRE_API = process.env.EMPIRE_API;
+
+    try {
+        const response = await axios.get(
+            "https://csgoempiretr.com/api/v2/metadata/socket",
             {
-                method: "GET",
                 headers: {
-                    accept: "application/json, text/plain, */*",
-                    "accept-language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "user-agent":
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                    priority: "u=1, i",
-                    "sec-ch-ua":
-                        '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-                    "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": '"Windows"',
-                    "sec-fetch-dest": "empty",
-                    "sec-fetch-mode": "cors",
-                    "sec-fetch-site": "same-origin",
-                    "x-empire-device-identifier": `${uuid}`,
-                    "x-env-class": "green",
+                    Authorization: `Bearer ${EMPIRE_API}`,
                 },
-                credentials: "include",
+                ...proxyConfig,
             }
         );
-        return await response.json();
-    }, uuid);
+        return response.data;
+    } catch (error) {
+        console.error("Error in getting metadata from empure: ", error);
+        throw error;
+    }
 };
 
 export const sendTelegramNotify = async (message) => {
-    const chatId = process.env.CHAT_ID;
-    const tgToken = process.env.TG_TOKEN;
+    const CHAT_ID = process.env.CHAT_ID;
+    const TG_TOKEN = process.env.TG_TOKEN;
 
     try {
         const response = await axios.post(
-            `https://api.telegram.org/bot${tgToken}/sendMessage`,
+            `https://api.telegram.org/bot${TG_TOKEN}/sendMessage`,
             null,
             {
                 params: {
-                    chat_id: chatId,
+                    chat_id: CHAT_ID,
                     parse_mode: "HTML",
                     text: message,
                 },
+                ...proxyConfig,
             }
         );
     } catch (error) {
@@ -55,15 +60,16 @@ export const sendTelegramNotify = async (message) => {
 };
 
 export const getItemPriceOnWaxpeer = async (itemName) => {
-    const waxpeerApi = process.env.WAXPEER_API;
+    const WAXPEER_API = process.env.WAXPEER_API;
 
     try {
         const response = await axios.get(
-            `https://api.waxpeer.com/v1/search-items-by-name?api=${waxpeerApi}&names=${encodeURIComponent(
+            `https://api.waxpeer.com/v1/search-items-by-name?api=${WAXPEER_API}&names=${encodeURIComponent(
                 itemName
             )}&game=csgo&minified=0`,
             {
                 accept: "application/json",
+                ...proxyConfig,
             }
         );
         return response.data?.items[0]?.price || null;
